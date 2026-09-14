@@ -1,0 +1,19 @@
+{
+  "expo": {
+    "name": "Vi Crypto",
+    "slug": "vi-crypto-hai-chu-ky",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.vicrypto.haichuky"
+    },
+    "android": {
+      "package": "com.vicrypto.haichuky"
+    },
+    "plugins": [
+      "expo-status-bar"
+    ]
+  }
+}
