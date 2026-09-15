@@ -13,8 +13,8 @@
 // bằng ví loại nào.
 
 import React, { useState } from 'react';
-import { View, Text, StyleSheet } from 'react-native';
-import { Screen, Card, Button, Banner } from '../components/ui.js';
+import { View, Text, Pressable, StyleSheet } from 'react-native';
+import { Screen, Card, Button, Banner, Input } from '../components/ui.js';
 import WalletTypeBadge from '../components/WalletTypeBadge.js';
 import { colors, mono } from '../theme.js';
 import {
@@ -27,10 +27,13 @@ import { deriveAddress } from '../crypto/address.js';
 import { hashPayload, serializePayload, buildTransfer } from '../blockchain/validate.js';
 import { utf8ToBytes } from '../crypto/bytes.js';
 
-const SPEED_ROUNDS = 100;
-const BATCH_SIZE = 200;
-const DETERMINISM_ROUNDS = 5;
+const DEFAULT_ROUNDS = 100;
+const MAX_ROUNDS = 2000;
+// Dưới mức này số đo dao động quá mạnh để kết luận được, nhưng vẫn cho chạy
+// nếu người dùng xác nhận.
+const MIN_STABLE_ROUNDS = 10;
 const SIG_PREVIEW = 8; // số ký tự đầu chữ ký hiện ra để nhìn giống/khác
+const SIG_PREVIEW_COUNT = 5; // số chữ ký hiện ra, đủ nhìn giống/khác mà không tràn dòng
 
 const SAMPLE_NONCE = '00112233445566778899aabbccddeeff';
 // Đổi đúng MỘT ký tự cuối nonce: payload khác đi nhưng độ dài giữ nguyên, nên
@@ -134,14 +137,14 @@ function sampleTx(algorithm, publicKeyHex, address, nonce = SAMPLE_NONCE) {
 }
 
 // Đo tốc độ của MỘT thuật toán. Nhả luồng sau mỗi vòng để màn hình không đứng.
-async function measureAlgorithm(algorithm, onProgress) {
+async function measureAlgorithm(algorithm, rounds, onProgress) {
   const keygen = [];
   const signing = [];
   const verifying = [];
   const verifyingBad = [];
 
   const keys = [];
-  for (let i = 0; i < SPEED_ROUNDS; i++) {
+  for (let i = 0; i < rounds; i++) {
     const t0 = now();
     const privateKey = await algorithm.generatePrivateKeyHex();
     const publicKey = await algorithm.getPublicKeyHex(privateKey);
@@ -149,7 +152,7 @@ async function measureAlgorithm(algorithm, onProgress) {
     keys.push({ privateKey, publicKey });
     if (i % 10 === 0) {
       await yieldToUi();
-      if (onProgress) onProgress(`${algorithm.name}: sinh khoá ${i}/${SPEED_ROUNDS}`);
+      if (onProgress) onProgress(`${algorithm.name}: sinh khoá ${i}/${rounds}`);
     }
   }
 
@@ -162,7 +165,7 @@ async function measureAlgorithm(algorithm, onProgress) {
   );
 
   const signatures = [];
-  for (let i = 0; i < SPEED_ROUNDS; i++) {
+  for (let i = 0; i < rounds; i++) {
     const key = keys[i];
     const t0 = now();
     const result = await algorithm.sign(digest, key.privateKey);
@@ -170,23 +173,23 @@ async function measureAlgorithm(algorithm, onProgress) {
     signatures.push({ signature: result.signature, publicKey: key.publicKey });
     if (i % 10 === 0) {
       await yieldToUi();
-      if (onProgress) onProgress(`${algorithm.name}: ký ${i}/${SPEED_ROUNDS}`);
+      if (onProgress) onProgress(`${algorithm.name}: ký ${i}/${rounds}`);
     }
   }
 
-  for (let i = 0; i < SPEED_ROUNDS; i++) {
+  for (let i = 0; i < rounds; i++) {
     const item = signatures[i];
     const t0 = now();
     await algorithm.verify(item.signature, digest, item.publicKey);
     verifying.push(now() - t0);
     if (i % 10 === 0) {
       await yieldToUi();
-      if (onProgress) onProgress(`${algorithm.name}: verify ${i}/${SPEED_ROUNDS}`);
+      if (onProgress) onProgress(`${algorithm.name}: verify ${i}/${rounds}`);
     }
   }
 
   let rejected = 0;
-  for (let i = 0; i < SPEED_ROUNDS; i++) {
+  for (let i = 0; i < rounds; i++) {
     const item = signatures[i];
     const t0 = now();
     const ok = await algorithm.verify(item.signature, tamperedDigest, item.publicKey);
@@ -194,16 +197,16 @@ async function measureAlgorithm(algorithm, onProgress) {
     if (!ok) rejected++;
     if (i % 10 === 0) {
       await yieldToUi();
-      if (onProgress) onProgress(`${algorithm.name}: verify chữ ký sai ${i}/${SPEED_ROUNDS}`);
+      if (onProgress) onProgress(`${algorithm.name}: verify chữ ký sai ${i}/${rounds}`);
     }
   }
 
-  // Verify BATCH_SIZE chữ ký liên tiếp. Đây là VÒNG LẶP TUẦN TỰ, không phải batch verify.
-  if (onProgress) onProgress(`${algorithm.name}: verify ${BATCH_SIZE} chữ ký liên tiếp`);
+  // Verify liên tiếp cả xấp chữ ký. Đây là VÒNG LẶP TUẦN TỰ, không phải batch verify.
+  if (onProgress) onProgress(`${algorithm.name}: verify ${rounds} chữ ký liên tiếp`);
   await yieldToUi();
   const batchStart = now();
-  for (let i = 0; i < BATCH_SIZE; i++) {
-    const item = signatures[i % signatures.length];
+  for (let i = 0; i < rounds; i++) {
+    const item = signatures[i];
     await algorithm.verify(item.signature, digest, item.publicKey);
     if (i % 25 === 0) await yieldToUi();
   }
@@ -224,7 +227,7 @@ async function measureAlgorithm(algorithm, onProgress) {
       mean: keygenStat.mean + signStat.mean + verifyStat.mean,
       median: keygenStat.median + signStat.median + verifyStat.median,
     },
-    batch: { total: batchTotal, perSignature: batchTotal / BATCH_SIZE },
+    batch: { total: batchTotal, perSignature: batchTotal / rounds },
     sizes: {
       privateKeyBytes: 32,
       publicKeyBytes: keys[0].publicKey.length / 2,
@@ -236,7 +239,7 @@ async function measureAlgorithm(algorithm, onProgress) {
 }
 
 // Ký CÙNG một payload nhiều lần bằng cùng một khoá và đếm số chữ ký khác nhau.
-async function measureDeterminism(onProgress) {
+async function measureDeterminism(rounds, onProgress) {
   const results = [];
   for (const algorithm of listAlgorithms()) {
     const privateKey = await algorithm.generatePrivateKeyHex();
@@ -246,10 +249,13 @@ async function measureDeterminism(onProgress) {
 
     const modes = [];
     const defaults = [];
-    for (let i = 0; i < DETERMINISM_ROUNDS; i++) {
+    for (let i = 0; i < rounds; i++) {
       const { signature } = await algorithm.sign(digest, privateKey);
       defaults.push(signature);
       await yieldToUi();
+      if (onProgress && i % 10 === 0) {
+        onProgress(`${algorithm.name}: ký tất định ${i}/${rounds}`);
+      }
     }
     modes.push({
       label: 'mặc định',
@@ -260,10 +266,13 @@ async function measureDeterminism(onProgress) {
 
     if (algorithm.supportsExtraEntropy) {
       const randomized = [];
-      for (let i = 0; i < DETERMINISM_ROUNDS; i++) {
+      for (let i = 0; i < rounds; i++) {
         const { signature } = await algorithm.sign(digest, privateKey, { extraEntropy: true });
         randomized.push(signature);
         await yieldToUi();
+        if (onProgress && i % 10 === 0) {
+          onProgress(`${algorithm.name}: ký extraEntropy ${i}/${rounds}`);
+        }
       }
       modes.push({
         label: 'extraEntropy',
@@ -280,8 +289,9 @@ async function measureDeterminism(onProgress) {
 }
 
 async function verifyAll(algorithm, signatures, digest, publicKey) {
-  for (const signature of signatures) {
-    if (!(await algorithm.verify(signature, digest, publicKey))) return false;
+  for (let i = 0; i < signatures.length; i++) {
+    if (!(await algorithm.verify(signatures[i], digest, publicKey))) return false;
+    if (i % 10 === 0) await yieldToUi();
   }
   return true;
 }
@@ -394,12 +404,24 @@ function Section({ title, description, children }) {
   );
 }
 
+// Chip xổ ra / thu lại. Mỗi chip giữ trạng thái riêng nên đóng cái này không
+// ảnh hưởng cái khác; mặc định đóng.
 function Verdict({ children }) {
+  const [open, setOpen] = useState(false);
   return (
-    <Text style={styles.verdict}>
-      <Text style={styles.verdictTag}>Nhận xét: </Text>
-      {children}
-    </Text>
+    <View style={styles.verdictWrap}>
+      <Pressable
+        onPress={() => setOpen((v) => !v)}
+        hitSlop={8}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        style={({ pressed }) => [styles.verdictChip, pressed && styles.verdictChipPressed]}
+      >
+        <Text style={styles.verdictTag}>Nhận xét</Text>
+        <Text style={[styles.verdictCaret, open && styles.verdictCaretOpen]}>▸</Text>
+      </Pressable>
+      {open ? <Text style={styles.verdict}>{children}</Text> : null}
+    </View>
   );
 }
 
@@ -413,6 +435,12 @@ function AlgorithmHead({ id }) {
   );
 }
 
+function parseRounds(text) {
+  if (!/^\d+$/.test(text.trim())) return null;
+  const rounds = Number(text.trim());
+  return rounds >= 1 && rounds <= MAX_ROUNDS ? rounds : null;
+}
+
 export default function CryptoLabScreen() {
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(null);
@@ -420,20 +448,32 @@ export default function CryptoLabScreen() {
   const [determinism, setDeterminism] = useState(null);
   const [recovery, setRecovery] = useState(null);
   const [error, setError] = useState(null);
+  const [roundsText, setRoundsText] = useState(String(DEFAULT_ROUNDS));
+  const [roundsError, setRoundsError] = useState(null);
+  const [pending, setPending] = useState(null); // số vòng quá ít, chờ xác nhận
+  // Số vòng của lần đo ĐANG HIỂN THỊ. Tách khỏi ô nhập để người dùng sửa ô
+  // sau khi đo xong thì các câu mô tả không mô tả sai số vừa đo.
+  const [shownRounds, setShownRounds] = useState(DEFAULT_ROUNDS);
+  const [started, setStarted] = useState(false);
+  // Đổi mỗi lần đo để hai khối tĩnh dựng lại, kéo mọi chip nhận xét về đóng.
+  const [runId, setRunId] = useState(0);
 
-  const run = async () => {
+  const run = async (rounds) => {
     setBusy(true);
     setError(null);
     setSpeed(null);
     setDeterminism(null);
     setRecovery(null);
+    setShownRounds(rounds);
+    setStarted(true);
+    setRunId((id) => id + 1);
     try {
       const measured = [];
       for (const algorithm of listAlgorithms()) {
-        measured.push(await measureAlgorithm(algorithm, setProgress));
+        measured.push(await measureAlgorithm(algorithm, rounds, setProgress));
       }
       setSpeed(measured);
-      setDeterminism(await measureDeterminism(setProgress));
+      setDeterminism(await measureDeterminism(rounds, setProgress));
       setRecovery(await measureRecovery());
       setProgress(null);
     } catch (e) {
@@ -441,6 +481,22 @@ export default function CryptoLabScreen() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const requestRun = () => {
+    const rounds = parseRounds(roundsText);
+    if (rounds === null) {
+      setPending(null);
+      setRoundsError(`Số vòng phải là số nguyên từ 1 đến ${MAX_ROUNDS}.`);
+      return;
+    }
+    setRoundsError(null);
+    if (rounds < MIN_STABLE_ROUNDS) {
+      setPending(rounds);
+      return;
+    }
+    setPending(null);
+    run(rounds);
   };
 
   const ready = speed && determinism && recovery;
@@ -453,74 +509,117 @@ export default function CryptoLabScreen() {
           vậy cả hai thuật toán đều chạy được bất kể bạn đang đăng nhập bằng ví loại nào.
         </Text>
         <Text style={styles.intro}>
-          Mỗi phép đo {SPEED_ROUNDS} vòng, báo cả trung bình và trung vị. Trung vị đáng tin hơn khi
-          máy bị nghẽn giữa chừng.
+          Mỗi phép đo lặp lại đúng số vòng bạn đặt bên dưới, báo cả trung bình và trung vị. Trung vị
+          đáng tin hơn khi máy bị nghẽn giữa chừng.
         </Text>
+        <Input
+          label="Số vòng mỗi phép đo"
+          value={roundsText}
+          onChangeText={(text) => {
+            setRoundsText(text);
+            setRoundsError(null);
+            setPending(null);
+          }}
+          keyboardType="number-pad"
+          maxLength={4}
+          editable={!busy}
+          hint={`Số nguyên từ 1 đến ${MAX_ROUNDS}. Mặc định ${DEFAULT_ROUNDS}.`}
+        />
+        {roundsError ? <Text style={styles.roundsError}>{roundsError}</Text> : null}
+        {pending ? (
+          <Banner tone="warn" title="Số vòng quá ít">
+            <Text style={styles.pendingText}>
+              {pending} vòng là quá ít, kết quả có thể không ổn định. Vẫn muốn đo?
+            </Text>
+            <View style={styles.pendingActions}>
+              <Button
+                title={`Vẫn đo ${pending} vòng`}
+                tone="ghost"
+                style={styles.pendingButton}
+                onPress={() => {
+                  setPending(null);
+                  run(pending);
+                }}
+              />
+              <Button
+                title="Huỷ"
+                tone="ghost"
+                style={styles.pendingButton}
+                onPress={() => setPending(null)}
+              />
+            </View>
+          </Banner>
+        ) : null}
         <Button
           title={busy ? 'Đang đo…' : speed ? 'Đo lại' : 'Bắt đầu đo'}
-          onPress={run}
+          onPress={requestRun}
           busy={busy}
         />
         {progress ? <Text style={styles.progress}>{progress}</Text> : null}
         {error ? <Banner tone="error" title="Đo thất bại">{error}</Banner> : null}
       </Card>
 
-      <Card title="Khối 1 — Bảo mật">
-        <KnownBlock label="Bảng dưới là kiến thức đã biết, không phải kết quả đo trên máy này.">
-          <FactTable facts={SECURITY_FACTS} />
-          <Verdict>
-            Hai thuật toán ngang nhau ở mức ~128 bit và đều không kháng lượng tử; khác biệt duy nhất
-            trong bảng là rủi ro tái dùng nonce.
-          </Verdict>
-        </KnownBlock>
-
-        {determinism ? (
-          <Section
-            title="Đo được — tính tất định của chữ ký"
-            description={`Ký cùng một payload ${DETERMINISM_ROUNDS} lần bằng cùng một khoá, lần lượt với secp256k1 mặc định (nonce theo RFC 6979), secp256k1 bật cờ extraEntropy, và Ed25519 (tất định bắt buộc theo RFC 8032). Đếm số chữ ký khác nhau trong mỗi trường hợp và hiện ${SIG_PREVIEW} ký tự đầu của từng chữ ký.`}
-          >
-            {determinism.map((entry) => (
-              <View key={entry.id} style={styles.experiment}>
-                <AlgorithmHead id={entry.id} />
-                {entry.modes.map((mode) => (
-                  <View key={mode.label} style={styles.mode}>
-                    <Text style={styles.modeLabel}>{mode.label}</Text>
-                    <Text
-                      style={[
-                        styles.modeResult,
-                        { color: mode.unique === 1 ? colors.ok : colors.warn },
-                      ]}
-                    >
-                      {mode.unique}/{DETERMINISM_ROUNDS} chữ ký khác nhau
-                      {mode.allValid ? ' · tất cả đều verify được' : ' · CÓ CHỮ KÝ SAI'}
-                    </Text>
-                    <Text style={styles.sigLine} numberOfLines={1}>
-                      {mode.signatures.map((s) => s.slice(0, SIG_PREVIEW)).join('  ')}
-                    </Text>
-                  </View>
-                ))}
-              </View>
-            ))}
+      {started ? (
+        <Card title="Khối 1 — Bảo mật" key={runId}>
+          <KnownBlock label="Bảng dưới là kiến thức đã biết, không phải kết quả đo trên máy này.">
+            <FactTable facts={SECURITY_FACTS} />
             <Verdict>
-              Số chữ ký khác nhau trong {DETERMINISM_ROUNDS} lần ký —{' '}
-              {determinism
-                .flatMap((entry) =>
-                  entry.modes.map(
-                    (mode) => `${getAlgorithm(entry.id).name} ${mode.label}: ${mode.unique}`
-                  )
-                )
-                .join('; ')}
-              .
+              Hai thuật toán ngang nhau ở mức ~128 bit và đều không kháng lượng tử; khác biệt duy
+              nhất trong bảng là rủi ro tái dùng nonce.
             </Verdict>
-          </Section>
-        ) : null}
-      </Card>
+          </KnownBlock>
+
+          {determinism ? (
+            <Section
+              title="Đo được — tính tất định của chữ ký"
+              description={`Ký cùng một payload ${shownRounds} lần bằng cùng một khoá, lần lượt với secp256k1 mặc định (nonce theo RFC 6979), secp256k1 bật cờ extraEntropy, và Ed25519 (tất định bắt buộc theo RFC 8032). Đếm số chữ ký khác nhau trong mỗi trường hợp và hiện ${SIG_PREVIEW} ký tự đầu của ${SIG_PREVIEW_COUNT} chữ ký đầu tiên.`}
+            >
+              {determinism.map((entry) => (
+                <View key={entry.id} style={styles.experiment}>
+                  <AlgorithmHead id={entry.id} />
+                  {entry.modes.map((mode) => (
+                    <View key={mode.label} style={styles.mode}>
+                      <Text style={styles.modeLabel}>{mode.label}</Text>
+                      <Text
+                        style={[
+                          styles.modeResult,
+                          { color: mode.unique === 1 ? colors.ok : colors.warn },
+                        ]}
+                      >
+                        {mode.unique}/{shownRounds} chữ ký khác nhau
+                        {mode.allValid ? ' · tất cả đều verify được' : ' · CÓ CHỮ KÝ SAI'}
+                      </Text>
+                      <Text style={styles.sigLine} numberOfLines={1}>
+                        {mode.signatures
+                          .slice(0, SIG_PREVIEW_COUNT)
+                          .map((s) => s.slice(0, SIG_PREVIEW))
+                          .join('  ')}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              ))}
+              <Verdict>
+                Số chữ ký khác nhau trong {shownRounds} lần ký —{' '}
+                {determinism
+                  .flatMap((entry) =>
+                    entry.modes.map(
+                      (mode) => `${getAlgorithm(entry.id).name} ${mode.label}: ${mode.unique}`
+                    )
+                  )
+                  .join('; ')}
+                .
+              </Verdict>
+            </Section>
+          ) : null}
+        </Card>
+      ) : null}
 
       {speed ? (
         <Card title="Khối 2 — Hiệu năng">
           <Section
             title="Tốc độ ba phép cơ bản"
-            description={`Sinh khoá, ký và verify cùng một payload ${SPEED_ROUNDS} lần bằng mỗi thuật toán, đo từng lần bằng đồng hồ hiệu năng của máy, báo trung bình (TB) và trung vị (TV).`}
+            description={`Sinh khoá, ký và verify cùng một payload ${shownRounds} lần bằng mỗi thuật toán, đo từng lần bằng đồng hồ hiệu năng của máy, báo trung bình (TB) và trung vị (TV).`}
           >
             <TableHeader />
             <Row label="Sinh khoá (TB)" speed={speed} read={(r) => ms(r.keygen.mean)} />
@@ -542,7 +641,7 @@ export default function CryptoLabScreen() {
 
           <Section
             title="Verify một chữ ký sai"
-            description={`Sửa đúng một ký tự trong payload rồi đem chữ ký cũ đi verify trên payload mới, ${SPEED_ROUNDS} lần mỗi thuật toán. Đo thời gian hàm verify trả về false và đếm số lần từ chối.`}
+            description={`Sửa đúng một ký tự trong payload rồi đem chữ ký cũ đi verify trên payload mới, ${shownRounds} lần mỗi thuật toán. Đo thời gian hàm verify trả về false và đếm số lần từ chối.`}
           >
             <TableHeader />
             <Row label="Verify sai (TB)" speed={speed} read={(r) => ms(r.verifyBad.mean)} />
@@ -551,11 +650,11 @@ export default function CryptoLabScreen() {
             <Row
               label="Số lần từ chối"
               speed={speed}
-              read={(r) => `${r.verifyBad.rejected}/${SPEED_ROUNDS}`}
+              read={(r) => `${r.verifyBad.rejected}/${shownRounds}`}
               highlight
             />
             <Verdict>
-              Mọi thuật toán đều từ chối {SPEED_ROUNDS}/{SPEED_ROUNDS} lần, thời gian verify chữ ký
+              Mọi thuật toán đều từ chối {shownRounds}/{shownRounds} lần, thời gian verify chữ ký
               sai lệch nhiều nhất{' '}
               {Math.round(
                 Math.max(
@@ -623,7 +722,7 @@ export default function CryptoLabScreen() {
         <Card title="Khối 3 — Tính linh hoạt">
           <Section
             title="a) Batch verify"
-            description={`Batch verify là gộp nhiều chữ ký vào một phép kiểm tra chung thay vì kiểm từng cái. Kiểm tra API của thư viện đang cài xem có hàm nào làm việc đó không, rồi đo verify ${BATCH_SIZE} chữ ký bằng vòng lặp tuần tự để có mốc đối chiếu.`}
+            description={`Batch verify là gộp nhiều chữ ký vào một phép kiểm tra chung thay vì kiểm từng cái. Kiểm tra API của thư viện đang cài xem có hàm nào làm việc đó không, rồi đo verify ${shownRounds} chữ ký bằng vòng lặp tuần tự để có mốc đối chiếu.`}
           >
             <TableHeader />
             <Row
@@ -632,13 +731,13 @@ export default function CryptoLabScreen() {
               read={(r) => (getAlgorithm(r.id).supportsBatchVerify ? 'Có' : 'Không có')}
             />
             <Row
-              label={`Tuần tự ${BATCH_SIZE} chữ ký`}
+              label={`Tuần tự ${shownRounds} chữ ký`}
               speed={speed}
               read={(r) => ms(r.batch.total)}
               highlight
             />
             <Verdict>
-              Thư viện hiện dùng không cung cấp API batch verify, nên {BATCH_SIZE} chữ ký chỉ đo được
+              Thư viện hiện dùng không cung cấp API batch verify, nên {shownRounds} chữ ký chỉ đo được
               bằng vòng lặp tuần tự ({speed.map((r) => `${algName(r)} ${ms(r.batch.total)}`).join(', ')}
               ); xác minh theo lô là năng lực lý thuyết của Ed25519 và chưa đo được ở đây.
             </Verdict>
@@ -689,7 +788,7 @@ export default function CryptoLabScreen() {
 
           <Section
             title="c) Tuỳ chọn ngẫu nhiên hoá"
-            description={`Kiểm xem mỗi thuật toán có chế độ nào ngoài tất định không, dùng lại số chữ ký khác nhau trong ${DETERMINISM_ROUNDS} lần ký đã đo ở khối Bảo mật.`}
+            description={`Kiểm xem mỗi thuật toán có chế độ nào ngoài tất định không, dùng lại số chữ ký khác nhau trong ${shownRounds} lần ký đã đo ở khối Bảo mật.`}
           >
             <TableHeader />
             <Row
@@ -702,7 +801,7 @@ export default function CryptoLabScreen() {
               speed={speed}
               read={(r) => {
                 const entry = determinism.find((d) => d.id === r.id);
-                return `${entry.modes[0].unique}/${DETERMINISM_ROUNDS}`;
+                return `${entry.modes[0].unique}/${shownRounds}`;
               }}
             />
             <Row
@@ -710,7 +809,7 @@ export default function CryptoLabScreen() {
               speed={speed}
               read={(r) => {
                 const entry = determinism.find((d) => d.id === r.id);
-                return entry.modes[1] ? `${entry.modes[1].unique}/${DETERMINISM_ROUNDS}` : '—';
+                return entry.modes[1] ? `${entry.modes[1].unique}/${shownRounds}` : '—';
               }}
               highlight
             />
@@ -719,8 +818,8 @@ export default function CryptoLabScreen() {
                 .map((entry) => {
                   const name = getAlgorithm(entry.id).name;
                   return entry.modes[1]
-                    ? `${name} đổi được chế độ: tắt cờ cho ${entry.modes[0].unique}/${DETERMINISM_ROUNDS} chữ ký khác nhau, bật cờ cho ${entry.modes[1].unique}/${DETERMINISM_ROUNDS}`
-                    : `${name} chỉ có một chế độ, ${entry.modes[0].unique}/${DETERMINISM_ROUNDS} chữ ký khác nhau`;
+                    ? `${name} đổi được chế độ: tắt cờ cho ${entry.modes[0].unique}/${shownRounds} chữ ký khác nhau, bật cờ cho ${entry.modes[1].unique}/${shownRounds}`
+                    : `${name} chỉ có một chế độ, ${entry.modes[0].unique}/${shownRounds} chữ ký khác nhau`;
                 })
                 .join('; ')}
               .
@@ -729,15 +828,18 @@ export default function CryptoLabScreen() {
         </Card>
       ) : null}
 
-      <Card title="Khối 4 — Độ dễ triển khai">
-        <KnownBlock label="Bảng dưới là kiến thức đã biết, không phải kết quả đo trên máy này.">
-          <FactTable facts={IMPLEMENTATION_FACTS} />
-          <Verdict>
-            Ed25519 cần một bước setup thủ công nhưng đổi lại chữ ký cố định 64 byte; secp256k1 không
-            cần setup nhưng chữ ký DER 70–72 byte dài không cố định và phải parse trước khi verify.
-          </Verdict>
-        </KnownBlock>
-      </Card>
+      {started ? (
+        <Card title="Khối 4 — Độ dễ triển khai" key={runId}>
+          <KnownBlock label="Bảng dưới là kiến thức đã biết, không phải kết quả đo trên máy này.">
+            <FactTable facts={IMPLEMENTATION_FACTS} />
+            <Verdict>
+              Ed25519 cần một bước setup thủ công nhưng đổi lại chữ ký cố định 64 byte; secp256k1
+              không cần setup nhưng chữ ký DER 70–72 byte dài không cố định và phải parse trước khi
+              verify.
+            </Verdict>
+          </KnownBlock>
+        </Card>
+      ) : null}
     </Screen>
   );
 }
@@ -748,8 +850,28 @@ const styles = StyleSheet.create({
   section: { gap: 6, paddingTop: 4 },
   sectionTitle: { color: colors.text, fontSize: 14, fontWeight: '700' },
   sectionDesc: { color: colors.dim, fontSize: 12.5, lineHeight: 18 },
-  verdict: { color: colors.text, fontSize: 12.5, lineHeight: 18, marginTop: 6 },
-  verdictTag: { color: colors.accent, fontWeight: '700' },
+  verdictWrap: { gap: 6, marginTop: 6 },
+  verdictChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 6,
+    borderWidth: 1,
+    borderColor: colors.accent,
+    backgroundColor: colors.accent + '18',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  verdictChipPressed: { opacity: 0.7 },
+  verdict: { color: colors.text, fontSize: 12.5, lineHeight: 18 },
+  verdictTag: { color: colors.accent, fontWeight: '700', fontSize: 12 },
+  verdictCaret: { color: colors.accent, fontSize: 11 },
+  verdictCaretOpen: { transform: [{ rotate: '90deg' }] },
+  roundsError: { color: colors.danger, fontSize: 12, lineHeight: 17 },
+  pendingText: { color: colors.text, fontSize: 13, lineHeight: 19 },
+  pendingActions: { flexDirection: 'row', gap: 8, marginTop: 4 },
+  pendingButton: { flex: 1, paddingVertical: 9 },
   known: {
     borderWidth: 1,
     borderColor: colors.warn,
