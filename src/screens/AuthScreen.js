@@ -253,7 +253,7 @@ function RegisterPanel({ onError, onCreated }) {
       </Card>
 
       <Card title="Thông tin đăng nhập">
-        <Input label="Tên đăng nhập" value={username} onChangeText={setUsername} placeholder="vd: khai" />
+        <Input label="Tên đăng nhập" value={username} onChangeText={setUsername} placeholder="vd: username" />
         <Input
           label="Password"
           value={password}
