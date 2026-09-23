@@ -560,7 +560,7 @@ export default function CryptoLabScreen() {
       </Card>
 
       {started ? (
-        <Card title="Khối 1 — Bảo mật" key={runId}>
+        <Card title="Nhóm 1 — Bảo mật" key={runId}>
           <KnownBlock label="Bảng dưới là kiến thức đã biết, không phải kết quả đo trên máy này.">
             <FactTable facts={SECURITY_FACTS} />
             <Verdict>
@@ -616,7 +616,7 @@ export default function CryptoLabScreen() {
       ) : null}
 
       {speed ? (
-        <Card title="Khối 2 — Hiệu năng">
+        <Card title="Nhóm 2 — Hiệu năng">
           <Section
             title="Tốc độ ba phép cơ bản"
             description={`Sinh khoá, ký và verify cùng một payload ${shownRounds} lần bằng mỗi thuật toán, đo từng lần bằng đồng hồ hiệu năng của máy, báo trung bình (TB) và trung vị (TV).`}
@@ -719,7 +719,7 @@ export default function CryptoLabScreen() {
       ) : null}
 
       {ready ? (
-        <Card title="Khối 3 — Tính linh hoạt">
+        <Card title="Nhóm 3.1 — Tính linh hoạt">
           <Section
             title="a) Batch verify"
             description={`Batch verify là gộp nhiều chữ ký vào một phép kiểm tra chung thay vì kiểm từng cái. Kiểm tra API của thư viện đang cài xem có hàm nào làm việc đó không, rồi đo verify ${shownRounds} chữ ký bằng vòng lặp tuần tự để có mốc đối chiếu.`}
@@ -829,7 +829,7 @@ export default function CryptoLabScreen() {
       ) : null}
 
       {started ? (
-        <Card title="Khối 4 — Độ dễ triển khai" key={runId}>
+        <Card title="Nhóm 3.2 — Độ dễ triển khai" key={runId}>
           <KnownBlock label="Bảng dưới là kiến thức đã biết, không phải kết quả đo trên máy này.">
             <FactTable facts={IMPLEMENTATION_FACTS} />
             <Verdict>

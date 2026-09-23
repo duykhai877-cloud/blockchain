@@ -166,29 +166,30 @@ export default function WalletScreen({ session, nodeState, relayUrl, onLogout })
         </Banner>
       ) : null}
 
-      <Card title="Faucet">
-        {faucetState === 'claimed' ? (
-          <>
-            <Text style={styles.faucetDone}>Đã nhận {FAUCET_AMOUNT} coin ở block #{faucetBlock}</Text>
-            <Button title="Đã nhận" disabled />
-          </>
-        ) : faucetState === 'pending' ? (
-          <>
-            <Text style={styles.faucetHint}>
-              Giao dịch faucet đang nằm trong mempool, cần một block để xác nhận.
-            </Text>
-            <Button title="Đang chờ xác nhận…" disabled />
-          </>
-        ) : (
-          <>
-            <Text style={styles.faucetHint}>
-              Mỗi địa chỉ chỉ nhận được một lần. Luật này nằm trong đồng thuận nên node khác cũng
-              kiểm được, không phải cờ cục bộ.
-            </Text>
-            <Button title={`Nhận ${FAUCET_AMOUNT} coin`} onPress={claimFaucet} busy={faucetBusy} />
-          </>
-        )}
-      </Card>
+      {faucetState !== 'claimed' && (
+        <Card title="Faucet">
+          {faucetState === 'pending' ? (
+            <>
+              <Text style={styles.faucetHint}>
+                Giao dịch faucet đang nằm trong mempool, cần một block để xác nhận.
+              </Text>
+              <Button title="Đang chờ xác nhận…" disabled />
+            </>
+          ) : (
+            <>
+              <Text style={styles.faucetHint}>
+                Mỗi địa chỉ chỉ nhận được một lần. Luật này nằm trong đồng thuận nên node khác cũng
+                kiểm được, không phải cờ cục bộ.
+              </Text>
+              <Button
+                title={`Nhận ${FAUCET_AMOUNT} coin`}
+                onPress={claimFaucet}
+                busy={faucetBusy}
+              />
+            </>
+          )}
+        </Card>
+      )}
 
       <Card title="Khoá của ví">
         <CopyRow label="Địa chỉ" value={session.address} badge="43 ký tự" />
@@ -199,6 +200,15 @@ export default function WalletScreen({ session, nodeState, relayUrl, onLogout })
         />
         <CopyRow label="Private key" value={session.privateKey} secret badge="32 byte" />
       </Card>
+
+      {faucetState === 'claimed' && (
+        <Card title="Faucet">
+          <Text style={styles.faucetDone}>
+            Đã nhận {FAUCET_AMOUNT} coin ở block #{faucetBlock}
+          </Text>
+          <Button title="Đã nhận" disabled />
+        </Card>
+      )}
 
       <Card title="Node của bạn">
         <StatRow
