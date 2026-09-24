@@ -43,23 +43,32 @@ const TAMPERED_NONCE = SAMPLE_NONCE.slice(0, -1) + '0';
 // Bảng kiến thức đã biết, KHÔNG phải số đo.
 const SECURITY_FACTS = [
   {
-    label: 'Độ an toàn',
-    values: { [ALG_SECP256K1]: '~128 bit', [ALG_ED25519]: '~128 bit' },
+    label: 'Mô hình an toàn chữ ký',
+    values: {
+      [ALG_SECP256K1]: 'EUF-CMA / ECDSA',
+      [ALG_ED25519]: 'EUF-CMA / EdDSA',
+    },
   },
   {
-    label: 'Rủi ro tái dùng nonce',
+    label: 'Security strength',
     values: {
-      [ALG_SECP256K1]: 'Có, nếu triển khai sai',
-      [ALG_ED25519]: 'Không, tất định theo thiết kế',
+      [ALG_SECP256K1]: 'Khoảng mức 128-bit*',
+      [ALG_ED25519]: 'Khoảng mức 128-bit*',
     },
   },
   {
     label: 'Kháng lượng tử',
-    values: { [ALG_SECP256K1]: 'Không', [ALG_ED25519]: 'Không' },
+    values: {
+      [ALG_SECP256K1]: 'Không',
+      [ALG_ED25519]: 'Không',
+    },
   },
   {
-    label: 'Năm công bố',
-    values: { [ALG_SECP256K1]: '2000 (SEC), phổ biến từ 2009', [ALG_ED25519]: '2011' },
+    label: 'Nonce / tính tất định',
+    values: {
+      [ALG_SECP256K1]: 'ECDSA dùng nonce; triển khai có thể dùng RFC 6979',
+      [ALG_ED25519]: 'Nonce được sinh tất định theo thiết kế',
+    },
   },
 ];
 
@@ -141,7 +150,6 @@ async function measureAlgorithm(algorithm, rounds, onProgress) {
   const keygen = [];
   const signing = [];
   const verifying = [];
-  const verifyingBad = [];
 
   const keys = [];
   for (let i = 0; i < rounds; i++) {
@@ -159,10 +167,6 @@ async function measureAlgorithm(algorithm, rounds, onProgress) {
   const address = deriveAddress(algorithm.id, keys[0].publicKey);
   const tx = sampleTx(algorithm, keys[0].publicKey, address);
   const digest = hashPayload(tx);
-  // Cùng giao dịch nhưng nonce lệch một ký tự — chữ ký cũ phải bị từ chối.
-  const tamperedDigest = hashPayload(
-    sampleTx(algorithm, keys[0].publicKey, address, TAMPERED_NONCE)
-  );
 
   const signatures = [];
   for (let i = 0; i < rounds; i++) {
@@ -188,19 +192,6 @@ async function measureAlgorithm(algorithm, rounds, onProgress) {
     }
   }
 
-  let rejected = 0;
-  for (let i = 0; i < rounds; i++) {
-    const item = signatures[i];
-    const t0 = now();
-    const ok = await algorithm.verify(item.signature, tamperedDigest, item.publicKey);
-    verifyingBad.push(now() - t0);
-    if (!ok) rejected++;
-    if (i % 10 === 0) {
-      await yieldToUi();
-      if (onProgress) onProgress(`${algorithm.name}: verify chữ ký sai ${i}/${rounds}`);
-    }
-  }
-
   // Verify liên tiếp cả xấp chữ ký. Đây là VÒNG LẶP TUẦN TỰ, không phải batch verify.
   if (onProgress) onProgress(`${algorithm.name}: verify ${rounds} chữ ký liên tiếp`);
   await yieldToUi();
@@ -222,7 +213,6 @@ async function measureAlgorithm(algorithm, rounds, onProgress) {
     keygen: keygenStat,
     sign: signStat,
     verify: verifyStat,
-    verifyBad: { mean: mean(verifyingBad), median: median(verifyingBad), rejected },
     txCost: {
       mean: keygenStat.mean + signStat.mean + verifyStat.mean,
       median: keygenStat.median + signStat.median + verifyStat.median,
@@ -328,6 +318,147 @@ async function measureRecovery() {
   return results;
 }
 
+// Kiểm tra tính toàn vẹn của chữ ký:
+// ký payload gốc, sau đó sửa payload và dùng lại chữ ký cũ.
+// Đây là kiểm tra thực nghiệm về hành vi verify, KHÔNG phải bằng chứng EUF-CMA.
+async function measureIntegrity(rounds, onProgress) {
+  const results = [];
+
+  for (const algorithm of listAlgorithms()) {
+    let originalAccepted = 0;
+    let tamperedRejected = 0;
+
+    for (let i = 0; i < rounds; i++) {
+      const privateKey = await algorithm.generatePrivateKeyHex();
+      const publicKey = await algorithm.getPublicKeyHex(privateKey);
+      const address = deriveAddress(algorithm.id, publicKey);
+
+      const originalTx = sampleTx(
+        algorithm,
+        publicKey,
+        address,
+        SAMPLE_NONCE
+      );
+
+      const tamperedTx = sampleTx(
+        algorithm,
+        publicKey,
+        address,
+        TAMPERED_NONCE
+      );
+
+      const digest = hashPayload(originalTx);
+      const tamperedDigest = hashPayload(tamperedTx);
+
+      const { signature } = await algorithm.sign(digest, privateKey);
+
+      const originalValid = await algorithm.verify(
+        signature,
+        digest,
+        publicKey
+      );
+
+      const tamperedValid = await algorithm.verify(
+        signature,
+        tamperedDigest,
+        publicKey
+      );
+
+      if (originalValid) originalAccepted++;
+      if (!tamperedValid) tamperedRejected++;
+
+      if (i % 10 === 0) {
+        await yieldToUi();
+        if (onProgress) {
+          onProgress(
+            `${algorithm.name}: kiểm tra toàn vẹn ${i}/${rounds}`
+          );
+        }
+      }
+    }
+
+    results.push({
+      id: algorithm.id,
+      originalAccepted,
+      tamperedRejected,
+      rounds,
+    });
+  }
+
+  return results;
+}
+
+// Kiểm tra thực nghiệm chống dùng chữ ký của payload này
+// cho một payload khác.
+// Không thể dùng phép thử nhỏ này để chứng minh EUF-CMA.
+async function measureForgery(rounds, onProgress) {
+  const results = [];
+
+  for (const algorithm of listAlgorithms()) {
+    let rejected = 0;
+    let accepted = 0;
+
+    for (let i = 0; i < rounds; i++) {
+      const privateKey = await algorithm.generatePrivateKeyHex();
+      const publicKey = await algorithm.getPublicKeyHex(privateKey);
+      const address = deriveAddress(algorithm.id, publicKey);
+
+      const originalTx = sampleTx(
+        algorithm,
+        publicKey,
+        address,
+        SAMPLE_NONCE
+      );
+
+      const otherTx = sampleTx(
+        algorithm,
+        publicKey,
+        address,
+        TAMPERED_NONCE
+      );
+
+      const originalDigest = hashPayload(originalTx);
+      const otherDigest = hashPayload(otherTx);
+
+      const { signature } = await algorithm.sign(
+        originalDigest,
+        privateKey
+      );
+
+      // Cố dùng chữ ký của payload A cho payload B.
+      const valid = await algorithm.verify(
+        signature,
+        otherDigest,
+        publicKey
+      );
+
+      if (valid) {
+        accepted++;
+      } else {
+        rejected++;
+      }
+
+      if (i % 10 === 0) {
+        await yieldToUi();
+        if (onProgress) {
+          onProgress(
+            `${algorithm.name}: kiểm tra chống giả mạo ${i}/${rounds}`
+          );
+        }
+      }
+    }
+
+    results.push({
+      id: algorithm.id,
+      rejected,
+      accepted,
+      rounds,
+    });
+  }
+
+  return results;
+}
+
 // ---- Mảnh giao diện ----
 
 // Bảng đo dựng theo REGISTRY: mỗi thuật toán một cột. Thêm thuật toán thứ ba thì
@@ -380,6 +511,10 @@ function FactTable({ facts }) {
           ))}
         </View>
       ))}
+      <Text style={styles.factNote}>
+        * Security strength là đánh giá lý thuyết/cryptanalytic, không phải số đo được từ
+        phép benchmark của ứng dụng này.
+      </Text>
     </View>
   );
 }
@@ -442,6 +577,8 @@ function parseRounds(text) {
 }
 
 export default function CryptoLabScreen() {
+  const [integrity, setIntegrity] = useState(null);
+  const [forgery, setForgery] = useState(null); 
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(null);
   const [speed, setSpeed] = useState(null);
@@ -462,19 +599,42 @@ export default function CryptoLabScreen() {
     setBusy(true);
     setError(null);
     setSpeed(null);
+    setIntegrity(null);
+    setForgery(null);
     setDeterminism(null);
     setRecovery(null);
     setShownRounds(rounds);
     setStarted(true);
     setRunId((id) => id + 1);
+
     try {
       const measured = [];
+
       for (const algorithm of listAlgorithms()) {
-        measured.push(await measureAlgorithm(algorithm, rounds, setProgress));
+        measured.push(
+          await measureAlgorithm(
+            algorithm,
+            rounds,
+            setProgress
+          )
+        );
       }
+
       setSpeed(measured);
-      setDeterminism(await measureDeterminism(rounds, setProgress));
-      setRecovery(await measureRecovery());
+
+      setIntegrity(
+        await measureIntegrity(rounds, setProgress)
+      );
+
+      setForgery(
+        await measureForgery(rounds, setProgress)
+      );
+
+      setDeterminism( await measureDeterminism(rounds, setProgress));
+      setRecovery(
+        await measureRecovery()
+      );
+
       setProgress(null);
     } catch (e) {
       setError(e.message);
@@ -498,8 +658,7 @@ export default function CryptoLabScreen() {
     setPending(null);
     run(rounds);
   };
-
-  const ready = speed && determinism && recovery;
+  const ready = speed && integrity && forgery && determinism && recovery;
 
   return (
     <Screen>
@@ -561,35 +720,117 @@ export default function CryptoLabScreen() {
 
       {started ? (
         <Card title="Nhóm 1 — Bảo mật" key={runId}>
-          <KnownBlock label="Bảng dưới là kiến thức đã biết, không phải kết quả đo trên máy này.">
+          <KnownBlock label="Kiến thức đã biết — theo nhóm tiêu chí Security của NIST">
             <FactTable facts={SECURITY_FACTS} />
-            <Verdict>
-              Hai thuật toán ngang nhau ở mức ~128 bit và đều không kháng lượng tử; khác biệt duy
-              nhất trong bảng là rủi ro tái dùng nonce.
-            </Verdict>
+
+            <Text style={styles.factNote}>
+              Security strength là đánh giá lý thuyết/cryptanalytic, không phải số đo
+              được từ benchmark của ứng dụng này. Các phép đo bên dưới chỉ kiểm tra
+              hành vi thực tế của thư viện trong những tình huống cụ thể.
+            </Text>
           </KnownBlock>
+
+          {integrity ? (
+            <Section
+              title="1. Kiểm tra tính toàn vẹn chữ ký"
+              description={`Ký payload gốc ${shownRounds} lần. Sau đó thay đúng một ký tự trong nonce của payload và dùng lại chữ ký cũ để verify. Payload nguyên vẹn phải được chấp nhận, còn payload bị sửa phải bị từ chối.`}
+            >
+              <TableHeader />
+
+              <Row
+                label="Payload nguyên vẹn — chấp nhận"
+                speed={integrity}
+                read={(r) => `${r.originalAccepted}/${shownRounds}`}
+              />
+
+              <Row
+                label="Payload bị sửa — từ chối"
+                speed={integrity}
+                read={(r) => `${r.tamperedRejected}/${shownRounds}`}
+                highlight
+              />
+
+              <Verdict>
+                {integrity
+                  .map(
+                    (entry) =>
+                      `${algName(entry)} từ chối ${entry.tamperedRejected}/${shownRounds} payload bị sửa`
+                  )
+                  .join('; ')}
+                .
+              </Verdict>
+            </Section>
+          ) : null}
+
+          {forgery ? (
+            <Section
+              title="2. Kiểm tra chống giả mạo — thực nghiệm"
+              description={`Ký một payload bằng khoá riêng, sau đó cố dùng chính chữ ký đó cho một payload khác ${shownRounds} lần. Đây là phép kiểm tra hành vi đơn giản lấy cảm hứng từ mục tiêu EUF-CMA, không phải phép chứng minh tính EUF-CMA.`}
+            >
+              <TableHeader />
+
+              <Row
+                label="Chữ ký bị từ chối"
+                speed={forgery}
+                read={(r) => `${r.rejected}/${shownRounds}`}
+                highlight
+              />
+
+              <Row
+                label="Chấp nhận giả mạo"
+                speed={forgery}
+                read={(r) => `${r.accepted}/${shownRounds}`}
+              />
+
+              <Verdict>
+                {forgery
+                  .map(
+                    (entry) =>
+                      `${algName(entry)} không chấp nhận chữ ký của payload khác trong ${entry.rejected}/${shownRounds} lần thử`
+                  )
+                  .join('; ')}
+                . Kết quả này chỉ là kiểm tra thực nghiệm trên thư viện hiện tại,
+                không thay thế phân tích hoặc chứng minh mật mã học.
+              </Verdict>
+            </Section>
+          ) : null}
 
           {determinism ? (
             <Section
-              title="Đo được — tính tất định của chữ ký"
-              description={`Ký cùng một payload ${shownRounds} lần bằng cùng một khoá, lần lượt với secp256k1 mặc định (nonce theo RFC 6979), secp256k1 bật cờ extraEntropy, và Ed25519 (tất định bắt buộc theo RFC 8032). Đếm số chữ ký khác nhau trong mỗi trường hợp và hiện ${SIG_PREVIEW} ký tự đầu của ${SIG_PREVIEW_COUNT} chữ ký đầu tiên.`}
+              title="3. Kiểm tra nonce và tính tất định"
+              description={`Ký cùng một payload ${shownRounds} lần bằng cùng một khoá. Đếm số chữ ký khác nhau trong mỗi chế độ. Với secp256k1, kiểm tra cả chế độ mặc định và extraEntropy nếu thư viện hỗ trợ; với Ed25519, kiểm tra chế độ tất định theo thiết kế.`}
             >
               {determinism.map((entry) => (
                 <View key={entry.id} style={styles.experiment}>
                   <AlgorithmHead id={entry.id} />
+
                   {entry.modes.map((mode) => (
                     <View key={mode.label} style={styles.mode}>
-                      <Text style={styles.modeLabel}>{mode.label}</Text>
+                      <Text style={styles.modeLabel}>
+                        {mode.label}
+                      </Text>
+
                       <Text
                         style={[
                           styles.modeResult,
-                          { color: mode.unique === 1 ? colors.ok : colors.warn },
+                          {
+                            color:
+                              mode.unique === 1
+                                ? colors.ok
+                                : colors.warn,
+                          },
                         ]}
                       >
                         {mode.unique}/{shownRounds} chữ ký khác nhau
-                        {mode.allValid ? ' · tất cả đều verify được' : ' · CÓ CHỮ KÝ SAI'}
+                        {mode.allValid
+                          ? ' · tất cả đều verify được'
+                          : ' · CÓ CHỮ KÝ SAI'}
                       </Text>
-                      <Text style={styles.sigLine} numberOfLines={1}>
+
+                      <Text
+                        style={styles.sigLine}
+                        numberOfLines={1}
+                      >
                         {mode.signatures
                           .slice(0, SIG_PREVIEW_COUNT)
                           .map((s) => s.slice(0, SIG_PREVIEW))
@@ -599,16 +840,18 @@ export default function CryptoLabScreen() {
                   ))}
                 </View>
               ))}
+
               <Verdict>
-                Số chữ ký khác nhau trong {shownRounds} lần ký —{' '}
                 {determinism
                   .flatMap((entry) =>
                     entry.modes.map(
-                      (mode) => `${getAlgorithm(entry.id).name} ${mode.label}: ${mode.unique}`
+                      (mode) =>
+                        `${getAlgorithm(entry.id).name} ${mode.label}: ${mode.unique}/${shownRounds} chữ ký khác nhau`
                     )
                   )
                   .join('; ')}
-                .
+                . Đây là quan sát về cơ chế sinh chữ ký/nonce của thư viện,
+                không phải thước đo trực tiếp của mức độ an toàn.
               </Verdict>
             </Section>
           ) : null}
@@ -637,34 +880,6 @@ export default function CryptoLabScreen() {
                 </Verdict>
               );
             })()}
-          </Section>
-
-          <Section
-            title="Verify một chữ ký sai"
-            description={`Sửa đúng một ký tự trong payload rồi đem chữ ký cũ đi verify trên payload mới, ${shownRounds} lần mỗi thuật toán. Đo thời gian hàm verify trả về false và đếm số lần từ chối.`}
-          >
-            <TableHeader />
-            <Row label="Verify sai (TB)" speed={speed} read={(r) => ms(r.verifyBad.mean)} />
-            <Row label="Verify sai (TV)" speed={speed} read={(r) => ms(r.verifyBad.median)} />
-            <Row label="Verify đúng (TV)" speed={speed} read={(r) => ms(r.verify.median)} />
-            <Row
-              label="Số lần từ chối"
-              speed={speed}
-              read={(r) => `${r.verifyBad.rejected}/${shownRounds}`}
-              highlight
-            />
-            <Verdict>
-              Mọi thuật toán đều từ chối {shownRounds}/{shownRounds} lần, thời gian verify chữ ký
-              sai lệch nhiều nhất{' '}
-              {Math.round(
-                Math.max(
-                  ...speed.map(
-                    (r) => Math.abs(r.verifyBad.median - r.verify.median) / r.verify.median
-                  )
-                ) * 100
-              )}
-              % so với verify chữ ký đúng.
-            </Verdict>
           </Section>
 
           <Section
@@ -904,4 +1119,5 @@ const styles = StyleSheet.create({
   modeLabel: { color: colors.text, fontSize: 12.5, fontWeight: '600' },
   modeResult: { color: colors.dim, fontSize: 12.5, fontWeight: '600', lineHeight: 18 },
   sigLine: { color: colors.faint, fontFamily: mono, fontSize: 10.5 },
+  factNote: { color: colors.faint, fontSize: 10.5, lineHeight: 15, marginTop: 2 },
 });
