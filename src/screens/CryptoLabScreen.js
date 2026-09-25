@@ -511,10 +511,10 @@ function FactTable({ facts }) {
           ))}
         </View>
       ))}
-      <Text style={styles.factNote}>
+      {/* <Text style={styles.factNote}>
         * Security strength là đánh giá lý thuyết/cryptanalytic, không phải số đo được từ
         phép benchmark của ứng dụng này.
-      </Text>
+      </Text> */}
     </View>
   );
 }
@@ -723,17 +723,17 @@ export default function CryptoLabScreen() {
           <KnownBlock label="Kiến thức đã biết — theo nhóm tiêu chí Security của NIST">
             <FactTable facts={SECURITY_FACTS} />
 
-            <Text style={styles.factNote}>
+            {/* <Text style={styles.factNote}>
               Security strength là đánh giá lý thuyết/cryptanalytic, không phải số đo
               được từ benchmark của ứng dụng này. Các phép đo bên dưới chỉ kiểm tra
               hành vi thực tế của thư viện trong những tình huống cụ thể.
-            </Text>
+            </Text> */}
           </KnownBlock>
 
           {integrity ? (
             <Section
               title="1. Kiểm tra tính toàn vẹn chữ ký"
-              description={`Ký payload gốc ${shownRounds} lần. Sau đó thay đúng một ký tự trong nonce của payload và dùng lại chữ ký cũ để verify. Payload nguyên vẹn phải được chấp nhận, còn payload bị sửa phải bị từ chối.`}
+              // description={`Ký payload gốc ${shownRounds} lần. Sau đó thay đúng một ký tự trong nonce của payload và dùng lại chữ ký cũ để verify. Payload nguyên vẹn phải được chấp nhận, còn payload bị sửa phải bị từ chối.`}
             >
               <TableHeader />
 
@@ -765,7 +765,7 @@ export default function CryptoLabScreen() {
           {forgery ? (
             <Section
               title="2. Kiểm tra chống giả mạo — thực nghiệm"
-              description={`Ký một payload bằng khoá riêng, sau đó cố dùng chính chữ ký đó cho một payload khác ${shownRounds} lần. Đây là phép kiểm tra hành vi đơn giản lấy cảm hứng từ mục tiêu EUF-CMA, không phải phép chứng minh tính EUF-CMA.`}
+              // description={`Ký một payload bằng khoá riêng, sau đó cố dùng chính chữ ký đó cho một payload khác ${shownRounds} lần. Đây là phép kiểm tra hành vi đơn giản lấy cảm hứng từ mục tiêu EUF-CMA, không phải phép chứng minh tính EUF-CMA.`}
             >
               <TableHeader />
 
@@ -796,64 +796,101 @@ export default function CryptoLabScreen() {
           ) : null}
 
           {determinism ? (
-            <Section
-              title="3. Kiểm tra nonce và tính tất định"
-              description={`Ký cùng một payload ${shownRounds} lần bằng cùng một khoá. Đếm số chữ ký khác nhau trong mỗi chế độ. Với secp256k1, kiểm tra cả chế độ mặc định và extraEntropy nếu thư viện hỗ trợ; với Ed25519, kiểm tra chế độ tất định theo thiết kế.`}
-            >
-              {determinism.map((entry) => (
-                <View key={entry.id} style={styles.experiment}>
-                  <AlgorithmHead id={entry.id} />
+          <Section
+            title="3. Kiểm tra tính tất định"
+            description={`Ký cùng một payload ${shownRounds} lần bằng cùng một khoá.`}
+          >
+            <View style={styles.determinismTable}>
+              {/* Header */}
+              <View style={styles.determinismRow}>
+                <Text style={styles.determinismLabel} />
 
-                  {entry.modes.map((mode) => (
-                    <View key={mode.label} style={styles.mode}>
-                      <Text style={styles.modeLabel}>
-                        {mode.label}
-                      </Text>
+                {listAlgorithms().map((algorithm) => (
+                  <Text
+                    key={algorithm.id}
+                    style={[
+                      styles.determinismHead,
+                      { color: algorithm.color },
+                    ]}
+                  >
+                    {algorithm.name}
+                  </Text>
+                ))}
+              </View>
 
-                      <Text
-                        style={[
-                          styles.modeResult,
-                          {
-                            color:
-                              mode.unique === 1
-                                ? colors.ok
-                                : colors.warn,
-                          },
-                        ]}
-                      >
-                        {mode.unique}/{shownRounds} chữ ký khác nhau
-                        {mode.allValid
-                          ? ' · tất cả đều verify được'
-                          : ' · CÓ CHỮ KÝ SAI'}
-                      </Text>
+              {/* Mặc định */}
+              <View style={styles.determinismRow}>
+                <Text style={styles.determinismLabel}>
+                  Mặc định
+                </Text>
 
-                      <Text
-                        style={styles.sigLine}
-                        numberOfLines={1}
-                      >
-                        {mode.signatures
-                          .slice(0, SIG_PREVIEW_COUNT)
-                          .map((s) => s.slice(0, SIG_PREVIEW))
-                          .join('  ')}
-                      </Text>
-                    </View>
-                  ))}
-                </View>
-              ))}
+                {listAlgorithms().map((algorithm) => {
+                  const entry = determinism.find(
+                    (item) => item.id === algorithm.id
+                  );
 
-              <Verdict>
-                {determinism
-                  .flatMap((entry) =>
-                    entry.modes.map(
-                      (mode) =>
-                        `${getAlgorithm(entry.id).name} ${mode.label}: ${mode.unique}/${shownRounds} chữ ký khác nhau`
-                    )
+                  const mode = entry?.modes.find(
+                    (item) => item.label === 'mặc định'
+                  );
+
+                  return (
+                    <Text
+                      key={algorithm.id}
+                      style={[
+                        styles.determinismValue,
+                        { color: algorithm.color },
+                      ]}
+                    >
+                      {mode ? `${mode.unique}/${shownRounds}` : '—'}
+                    </Text>
+                  );
+                })}
+              </View>
+
+              {/* extraEntropy */}
+              <View style={styles.determinismRow}>
+                <Text style={styles.determinismLabel}>
+                  extraEntropy
+                </Text>
+
+                {listAlgorithms().map((algorithm) => {
+                  const entry = determinism.find(
+                    (item) => item.id === algorithm.id
+                  );
+
+                  const mode = entry?.modes.find(
+                    (item) => item.label === 'extraEntropy'
+                  );
+
+                  return (
+                    <Text
+                      key={algorithm.id}
+                      style={[
+                        styles.determinismValue,
+                        { color: algorithm.color },
+                      ]}
+                    >
+                      {mode ? `${mode.unique}/${shownRounds}` : '—'}
+                    </Text>
+                  );
+                })}
+              </View>
+            </View>
+
+            {/* Giữ nguyên phần nhận xét */}
+            <Verdict>
+              {determinism
+                .flatMap((entry) =>
+                  entry.modes.map(
+                    (mode) =>
+                      `${getAlgorithm(entry.id).name} ${mode.label}: ${mode.unique}/${shownRounds} chữ ký khác nhau`
                   )
-                  .join('; ')}
-                . Đây là quan sát về cơ chế sinh chữ ký/nonce của thư viện,
-                không phải thước đo trực tiếp của mức độ an toàn.
-              </Verdict>
-            </Section>
+                )
+                .join('; ')}
+              . Đây là quan sát về cơ chế sinh chữ ký/nonce của thư viện,
+              không phải thước đo trực tiếp của mức độ an toàn.
+            </Verdict>
+          </Section>
           ) : null}
         </Card>
       ) : null}
@@ -1120,4 +1157,34 @@ const styles = StyleSheet.create({
   modeResult: { color: colors.dim, fontSize: 12.5, fontWeight: '600', lineHeight: 18 },
   sigLine: { color: colors.faint, fontFamily: mono, fontSize: 10.5 },
   factNote: { color: colors.faint, fontSize: 10.5, lineHeight: 15, marginTop: 2 },
+  determinismTable: {
+    gap: 2,
+  },
+
+  determinismRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 5,
+  },
+
+  determinismLabel: {
+    flex: 1.3,
+    color: colors.dim,
+    fontSize: 12.5,
+  },
+
+  determinismHead: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '700',
+    textAlign: 'right',
+  },
+
+  determinismValue: {
+    flex: 1,
+    fontSize: 12.5,
+    fontWeight: '600',
+    textAlign: 'right',
+    fontFamily: mono,
+  },
 });
